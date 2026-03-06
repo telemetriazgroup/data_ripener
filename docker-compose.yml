@@ -1,0 +1,14 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: data_ripener_api
+    ports:
+      - "9055:9055"
+    env_file:
+      - .env
+    volumes:
+      - ./app:/app/app
+    command: uvicorn server.app:app --host 0.0.0.0 --port 9055 --reload
+    restart: unless-stopped

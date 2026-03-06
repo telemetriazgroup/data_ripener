@@ -1,0 +1,81 @@
+# Entornos virtuales
+# Excluye tu directorio de entorno virtual. El nombre puede variar (ej. venv, .venv, env, .env)
+/venv/
+/.venv/
+/env/
+/.env/
+/env.bak/
+/venv.bak/
+/myTest/
+# Archivos de variables de entorno
+# NUNCA subas tus credenciales o secretos a un repositorio público.
+.env
+.env.*
+!.env.example
+
+# Archivos compilados de Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+
+# Paquetes de distribución / instalación
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Instalador de PyInstaller
+*.manifest
+*.spec
+
+# Bases de datos
+# Excluye archivos de bases de datos locales si usas SQLite para desarrollo
+*.sqlite3
+*.db
+local_test.db
+db.sqlite3
+db.sqlite3-journal
+
+# Archivos de registros (logs)
+*.log
+logs/
+*.log.*
+
+# Reportes y cache de pruebas
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# Cache de herramientas de calidad de código
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+dmypy.json
+
+# Editores de código y IDEs
+.idea/
+.vscode/
+*.swp
+*~
+*.sublime-project
+*.sublime-workspace
+
+# Archivos de sistema operativo
+.DS_Store
+Thumbs.db

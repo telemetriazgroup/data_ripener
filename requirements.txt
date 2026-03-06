@@ -1,0 +1,38 @@
+
+# ==============================================================================
+# requirements.txt — FastAPI Project (Python 3.12)
+# Última revisión: 2025-03 | Motor reemplazado por PyMongo (motor descontinuado)
+# ==============================================================================
+
+# --- CORE DE FASTAPI Y SERVIDOR ASGI ---
+fastapi==0.115.12
+uvicorn[standard]==0.34.0        # uvloop + httptools incluidos
+
+# --- DRIVERS DE BASE DE DATOS ---
+pymongo==4.12.1                  # Driver oficial MongoDB (sync + async nativo con AsyncMongoClient)
+asyncpg==0.30.0                  # Driver async de alto rendimiento para PostgreSQL
+psycopg2-binary==2.9.10          # Driver sync PostgreSQL (si alguna lib lo requiere)
+sqlalchemy==2.0.40               # ORM async-ready (versión 2.x)
+databases==0.9.0                 # Abstracción async sobre SQLAlchemy core
+
+# --- VALIDACIÓN Y CONFIGURACIÓN ---
+pydantic==2.11.1
+pydantic-settings==2.9.0         # Reemplaza python-decouple para proyectos Pydantic v2
+python-dotenv==1.1.0
+
+# --- SEGURIDAD Y CRIPTOGRAFÍA ---
+cryptography==44.0.2
+
+# --- TAREAS EN SEGUNDO PLANO ---
+celery==5.5.1
+redis==5.2.1                     # Broker para Celery + caché
+
+# --- MQTT PARA IoT ---
+fastapi-mqtt==2.2.0
+
+# --- RATE LIMITING ---
+slowapi==0.1.9
+
+# --- UTILIDADES ---
+requests==2.32.3                 # HTTP sync (útil para integraciones externas puntuales)
+httpx==0.28.1                    # HTTP async (preferido sobre requests en contexto async)
