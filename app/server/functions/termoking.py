@@ -124,31 +124,40 @@ descrip = ["GREENBOX ZGRU9803515","GREENBOX ZGRU0048736","GREENBOX ZGRU9803691",
 from datetime import datetime
 
 def obtener_meses_creados(db):
+    """
+    Lista nombres de colecciones TK_dispositivos_MM_YYYY existentes, desde el mes actual
+    hacia atrás mientras existan (una sola llamada a list_collection_names).
+    """
+    # Una sola llamada a la BD; con muchas colecciones esto evita N round-trips
+    todos_los_nombres = db.list_collection_names()
+    prefijo = "TK_dispositivos_"
+    existentes = set()
+    for nombre in todos_los_nombres:
+        if not nombre.startswith(prefijo):
+            continue
+        partes = nombre.split("_")
+        if len(partes) >= 4:
+            try:
+                mes = int(partes[-2])
+                anio = int(partes[-1])
+                existentes.add((anio, mes))
+            except ValueError:
+                pass
 
     now = datetime.now()
     mes = now.month
     anio = now.year
-
     meses_creados = []
 
     while True:
-
-        nombre_coleccion = bd_gene_mes_año(f"{mes:02d}", f"{anio:04d}")
-
-        # verificar si la colección existe
-        if nombre_coleccion in db.list_collection_names():
-
-            #meses_creados.append(f"{anio:04d}-{mes:02d}")
-            meses_creados.append(nombre_coleccion)
-            # retroceder un mes
-            mes -= 1
-
-            if mes == 0:
-                mes = 12
-                anio -= 1
-
-        else:
+        # (año, mes) para coincidir con existentes
+        if (anio, mes) not in existentes:
             break
+        meses_creados.append(bd_gene_mes_año(f"{mes:02d}", f"{anio:04d}"))
+        mes -= 1
+        if mes == 0:
+            mes = 12
+            anio -= 1
 
     return meses_creados
 
@@ -472,57 +481,60 @@ import time
 
 
 def imeis_en_colecciones(meses_creados, green_box, collection):
-    # resultado: {"imei1": ["TK_dispositivos_03_2026", ...], "imei2": [...], ...}
-    #vacear las colecciones que tengan el nombre "TRATADO_green_box[i]
-    # vaciar TRATADO_<imei>
+    """
+    Por cada mes con colección TK_dispositivos_MM_YYYY, busca IMEIs en green_box,
+    procesa los documentos de cada TK_<imei>_MM_YYYY y vuelca resultado en TRATADO_<imei>.
+    Devuelve {"imei": [{"Coleccion", "cantidad", "tiempo_ejecucion"}, ...], ...}.
+    """
     tiempo_inicio = time.time()
+    resultado = {imei: [] for imei in green_box}
+
+    # Vaciar TRATADO_<imei> una vez por IMEI
     for imei in green_box:
-        nombre = f"TRATADO_{imei}"
-        collection(nombre).delete_many({})
-        resultado = {imei: [] for imei in green_box}
+        collection(f"TRATADO_{imei}").delete_many({})
 
     for nombre_coleccion in meses_creados:
         col = collection(nombre_coleccion)
 
-        # Trae solo los imeis que existen en esa colección (1 consulta por mes)
+        # Una consulta por mes: solo IMEIs que están en green_box
         for doc in col.find({"imei": {"$in": green_box}}, {"_id": 0, "imei": 1}):
-            
             imei = doc.get("imei")
             if not imei:
                 continue
 
             col_imei = collection(bd_gene_imei(nombre_coleccion, imei))
-            col_tratado = collection(f"TRATADO_{imei}")   # <- AQUÍ
-            
-            #procesar 10 documentos de cada coleccion y guardar en una lista de documentos
-            documentos = []
-            #for doc in col_imei.find({}).limit(10):
-            for doc in col_imei.find({}):
+            col_tratado = collection(f"TRATADO_{imei}")
 
-                documentos.append(doc)
-            #procesar los documentos de la lista con la funcion procesar_documento
-            for doc in documentos:
+            # Procesar en batch: cursor → lista de docs a insertar → insert_many (evita N round-trips)
+            documentos_crudos = list(col_imei.find({}))
+            cantidad_datos = len(documentos_crudos)
+
+            if not documentos_crudos:
+                resultado.setdefault(imei, []).append({
+                    "Coleccion": nombre_coleccion,
+                    "cantidad": 0,
+                    "tiempo_ejecucion": time.time() - tiempo_inicio,
+                })
+                continue
+
+            insertar = []
+            for doc in documentos_crudos:
                 resultado1 = procesar_documento(doc)
-                print(resultado1)
-                print("--------------------------------")
                 validado = estructura_termoking(resultado1)
-                validado['ethylene'] = validado.get('PPM_Sensor')
-                validado['sp_ethyleno'] = validado.get('SP_PPM')
-                #validado['stateProcess'] = validado.get('stateProcess')
-                validado['inyeccion_hora'] = validado.get('iDrtRip')
-                print(validado)
-                print("--------------------------------")
-                col_tratado.insert_one(validado)
-            cantidad_datos = col_imei.count_documents({})
-            #calcular el tiempo de ejecucion de la funcion
+                validado["ethylene"] = validado.get("PPM_Sensor")
+                validado["sp_ethyleno"] = validado.get("SP_PPM")
+                validado["inyeccion_hora"] = validado.get("iDrtRip")
+                insertar.append(validado)
+
+            if insertar:
+                col_tratado.insert_many(insertar)
+
             tiempo_ejecucion = time.time() - tiempo_inicio
-            print(f"Tiempo de ejecución: {tiempo_ejecucion:.2f} segundos")
             resultado.setdefault(imei, []).append({
                 "Coleccion": nombre_coleccion,
                 "cantidad": cantidad_datos,
-                "tiempo_ejecucion": tiempo_ejecucion
+                "tiempo_ejecucion": tiempo_ejecucion,
             })
-            
 
     return resultado               
 
