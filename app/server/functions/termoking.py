@@ -1097,3 +1097,184 @@ def ultimo_estado_dispositivos_termoking() -> Dict[str, Any]:
         },
         "dispositivos": dispositivos,
     }
+
+
+# ── Helpers de power state ────────────────────────────────────────────────────
+
+def _extraer_fecha_evento(sub_doc: Optional[Dict[str, Any]]) -> Optional[datetime]:
+    """Extrae y parsea la fecha de un sub-doc {fecha, batch_id}."""
+    if not sub_doc:
+        return None
+    val = sub_doc.get("fecha")
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        return val
+    try:
+        return datetime.fromisoformat(str(val))
+    except (ValueError, TypeError):
+        return None
+
+
+def _resolver_power_texto(
+    enc: Optional[datetime],
+    apg: Optional[datetime],
+) -> Optional[str]:
+    """El evento más reciente entre encendido y apagado define el estado actual."""
+    if enc is None and apg is None:
+        return None
+    if enc is None:
+        return "off"
+    if apg is None:
+        return "on"
+    return "on" if enc >= apg else "off"
+
+
+def estado_general_dispositivos() -> Dict[str, Any]:
+    """
+    Consulta General_dispositivos en una sola operación y enriquece cada
+    documento con estado_conexion, power_state_texto y en_rango calculados
+    en Python. Listo para pasar directamente al router.
+    """
+    col  = collection(COLECCION_GENERAL)
+    docs = list(col.find({}, {"_id": 0}))
+
+    ahora = _ahora_gmt5()
+    dispositivos: List[Dict[str, Any]] = []
+
+    for doc in docs:
+        # Estado de conexión
+        ultimo_recibido = doc.get("ultimo_dato_recibido")
+        if ultimo_recibido is not None and not isinstance(ultimo_recibido, datetime):
+            try:
+                ultimo_recibido = datetime.fromisoformat(str(ultimo_recibido))
+            except (ValueError, TypeError):
+                ultimo_recibido = None
+
+        estado_con    = _calcular_estado_conexion(ultimo_recibido)
+        fecha_gmt5    = _como_gmt5(ultimo_recibido)
+        minutos_desde = (
+            round((ahora - fecha_gmt5).total_seconds() / 60, 1)
+            if fecha_gmt5 else None
+        )
+
+        # Power state: el evento más reciente entre encendido y apagado gana
+        enc_fecha         = _extraer_fecha_evento(doc.get("ultimo_encendido"))
+        apg_fecha         = _extraer_fecha_evento(doc.get("ultimo_apagado"))
+        power_state_texto = _resolver_power_texto(enc_fecha, apg_fecha)
+
+        # En rango: return_air ±5 respecto a set_point
+        sp_doc   = doc.get("ultimo_set_point_temperatura_valido") or {}
+        ra_doc   = doc.get("ultimo_return_air_valido") or {}
+        en_rango = _calcular_en_rango(sp_doc.get("valor"), ra_doc.get("valor"))
+
+        dispositivos.append({
+            "imei":                      doc.get("imei"),
+            "descripcion":               doc.get("descripcion"),
+            "estado_conexion":           estado_con,
+            "ultimo_dato_recibido":      _fecha_a_iso(ultimo_recibido),
+            "minutos_desde_ultimo_dato": minutos_desde,
+            "proceso_activo":            doc.get("proceso_activo", False),
+            "power_state_texto":         power_state_texto,
+            "en_rango":                  en_rango,
+            "ultimo_set_point":          _serializar_sub_doc(doc.get("ultimo_set_point_temperatura_valido")),
+            "ultimo_temp_supply":        _serializar_sub_doc(doc.get("ultimo_temp_supply_valido")),
+            "ultimo_return_air":         _serializar_sub_doc(doc.get("ultimo_return_air_valido")),
+            "ultimo_relative_humidity":  _serializar_sub_doc(doc.get("ultimo_relative_humidity_valido")),
+            "ultimo_co2_reading":        _serializar_sub_doc(doc.get("ultimo_co2_reading_valido")),
+            "ultimo_ethylene":           _serializar_sub_doc(doc.get("ultimo_ethylene_valido")),
+            "ultimo_encendido":          _serializar_sub_doc(doc.get("ultimo_encendido")),
+            "ultimo_apagado":            _serializar_sub_doc(doc.get("ultimo_apagado")),
+            "ultimo_batch_id":           str(doc["ultimo_batch_id"]) if doc.get("ultimo_batch_id") else None,
+        })
+
+    # Resumen agregado
+    return {
+        "resumen": {
+            "total":          len(dispositivos),
+            "online":         sum(1 for d in dispositivos if d["estado_conexion"] == "online"),
+            "wait":           sum(1 for d in dispositivos if d["estado_conexion"] == "wait"),
+            "offline":        sum(1 for d in dispositivos if d["estado_conexion"] == "offline"),
+            "proceso_activo": sum(1 for d in dispositivos if d["proceso_activo"]),
+            "power_on":       sum(1 for d in dispositivos if d["power_state_texto"] == "on"),
+            "power_off":      sum(1 for d in dispositivos if d["power_state_texto"] == "off"),
+            "en_rango":       sum(1 for d in dispositivos if d["en_rango"] is True),
+            "zona_horaria":   "GMT-5",
+        },
+        "dispositivos": dispositivos,
+    }
+
+def _serializar_sub_doc(sub: Any) -> Optional[Dict[str, Any]]:
+    """Convierte ObjectId → str y datetime → ISO en un sub-documento."""
+    if not isinstance(sub, dict):
+        return sub
+    return {
+        k: (
+            str(v)         if isinstance(v, ObjectId) else
+            v.isoformat()  if isinstance(v, datetime) else
+            v
+        )
+        for k, v in sub.items()
+    }
+
+
+def historial_tratado(
+    imei: str,
+    fecha_inicio: Optional[datetime] = None,
+    fecha_fin: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """
+    Devuelve los documentos de TRATADO_<imei> en el rango [fecha_inicio, fecha_fin].
+
+    · Sin fechas        → últimas 12 horas desde ahora (GMT-5).
+    · Solo fecha_inicio → desde esa fecha hasta ahora.
+    · Ambas fechas      → rango exacto.
+    · Ordenado ASC por fecha. Máximo 7 días por consulta.
+    """
+    if imei not in green_box:
+        return {
+            "error": f"IMEI '{imei}' no pertenece al grupo green_box.",
+            "imeis_validos": green_box,
+        }
+
+    ahora = _ahora_gmt5()
+
+    if fecha_inicio is None and fecha_fin is None:
+        fecha_inicio = ahora - timedelta(hours=12)
+        fecha_fin    = ahora
+    elif fecha_inicio is not None and fecha_fin is None:
+        fecha_fin = ahora
+    elif fecha_inicio is None and fecha_fin is not None:
+        fecha_inicio = fecha_fin - timedelta(hours=12)
+
+    if (fecha_fin - fecha_inicio).total_seconds() > 7 * 86400:
+        return {
+            "error": "El rango solicitado supera el máximo permitido de 7 días.",
+            "fecha_inicio": _fecha_a_iso(fecha_inicio),
+            "fecha_fin":    _fecha_a_iso(fecha_fin),
+        }
+
+    cursor = collection(f"TRATADO_{imei}").find(
+        {"fecha": {"$gte": fecha_inicio, "$lte": fecha_fin}},
+        {"_id": 0, "lecturas_erradas": 0},
+    ).sort("fecha", 1)
+
+    tramas = []
+    for doc in cursor:
+        tramas.append({
+            k: (
+                v.isoformat() if isinstance(v, datetime) else
+                str(v)        if isinstance(v, ObjectId) else
+                v
+            )
+            for k, v in doc.items()
+        })
+
+    return {
+        "imei":         imei,
+        "descripcion":  _IMEI_DESCRIPCION.get(imei, imei),
+        "fecha_inicio": _fecha_a_iso(fecha_inicio),
+        "fecha_fin":    _fecha_a_iso(fecha_fin),
+        "total_tramas": len(tramas),
+        "tramas":       tramas,
+    }
