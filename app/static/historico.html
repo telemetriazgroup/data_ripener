@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Datos Histórico - TermoKing</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #1a1d23;
+      color: #e4e6eb;
+      min-height: 100vh;
+      padding: clamp(8px, 2vw, 16px);
+    }
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+      width: 100%;
+    }
+    h1 {
+      font-size: clamp(1.25rem, 4vw, 1.75rem);
+      margin: 0 0 1rem;
+      font-weight: 600;
+    }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 1rem;
+    }
+    .controls label {
+      font-size: 0.9rem;
+    }
+    .controls select {
+      min-width: 120px;
+      max-width: 100%;
+      padding: 8px 12px;
+      border-radius: 8px;
+      border: 1px solid #444;
+      background: #2d3139;
+      color: #e4e6eb;
+      font-size: 0.9rem;
+    }
+    .controls button {
+      padding: 8px 16px;
+      border-radius: 8px;
+      border: none;
+      background: #0d6efd;
+      color: #fff;
+      font-size: 0.9rem;
+      cursor: pointer;
+    }
+    .controls button:hover { background: #0b5ed7; }
+    .controls button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .leyenda-zoom {
+      font-size: 0.8rem;
+      color: #888;
+      margin-top: 4px;
+    }
+    .opciones-grafica {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      align-items: center;
+      margin-bottom: 12px;
+      padding: 10px 12px;
+      background: #252830;
+      border-radius: 8px;
+    }
+    .opciones-grafica label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.9rem;
+      cursor: pointer;
+    }
+    .opciones-grafica input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      accent-color: #0d6efd;
+    }
+    .colores-serie {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .colores-serie .item-serie {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.85rem;
+    }
+    .colores-serie input[type="color"] {
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      border: 1px solid #555;
+      border-radius: 4px;
+      cursor: pointer;
+      background: #2d3139;
+    }
+    .colores-serie input[type="color"]::-webkit-color-swatch-wrapper { padding: 2px; }
+    .colores-serie input[type="color"]::-webkit-color-swatch { border: none; border-radius: 2px; }
+    .chart-wrapper {
+      position: relative;
+      width: 100%;
+      min-height: min(320px, 50vh);
+      height: min(480px, 65vh);
+      max-height: min(70vh, 600px);
+      background: #252830;
+      border-radius: 12px;
+      padding: 12px;
+      margin-bottom: 1rem;
+    }
+    @media (max-width: 640px) {
+      .chart-wrapper { min-height: 280px; height: 360px; }
+      .leyenda-zoom { display: block; margin-top: 8px; }
+    }
+    .chart-wrapper canvas {
+      display: block;
+      width: 100% !important;
+      max-width: 100%;
+      height: 100% !important;
+    }
+    .error {
+      color: #f87171;
+      margin-top: 8px;
+    }
+    .loading { color: #94a3b8; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Datos Histórico</h1>
+    <div class="controls">
+      <label for="imei">Dispositivo (IMEI/MAC):</label>
+      <select id="imei">
+        <option value="CC:DB:A7:9D:F3:E8">GREENBOX ZGRU9803515</option>
+        <option value="0C:B8:15:F2:C7:A0">GREENBOX ZGRU0048736</option>
+        <option value="28:05:A5:2B:E9:88">GREENBOX ZGRU9803691</option>
+        <option value="28:05:A5:2A:FA:04">GREENBOX ZGRU1040025</option>
+        <option value="28:05:A5:2C:A9:E4">GREENBOX ZGRU003388</option>
+      </select>
+      <button type="button" id="cargar">Cargar historial</button>
+      <span class="leyenda-zoom">Zoom: rueda (PC) o pellizco (móvil). Desplazar: arrastrar. Reset: doble clic.</span>
+    </div>
+    <div id="opciones-grafica" class="opciones-grafica" style="display: none;">
+      <label>
+        <input type="checkbox" id="mostrar-etiquetas" checked>
+        Mostrar etiquetas de datos (números en la línea)
+      </label>
+      <span class="leyenda-zoom" style="margin: 0;">Colores:</span>
+      <div class="colores-serie" id="colores-serie"></div>
+    </div>
+    <div id="mensaje" class="error"></div>
+    <div class="chart-wrapper">
+      <canvas id="chart"></canvas>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const COLORS = [
+        '#3b82f6', '#22c55e', '#eab308', '#ef4444', '#8b5cf6',
+        '#06b6d4', '#f97316', '#ec4899', '#84cc16', '#6366f1'
+      ];
+
+      const NOMBRES_ES = {
+        temp_supply_1: 'Suministro',
+        return_air: 'Retorno aire',
+        evaporation_coil: 'Evaporación',
+        condensation_coil: 'Condensación',
+        set_point: 'Set point',
+        power_kwh: 'Potencia (kWh)',
+        co2_reading: 'CO2',
+        o2_reading: 'O2',
+        cargo_1_temp: 'Carga 1',
+        set_point_o2: 'Set point O2',
+        set_point_co2: 'Set point CO2'
+      };
+
+      let chart = null;
+
+      document.getElementById('cargar').addEventListener('click', cargar);
+      document.getElementById('mostrar-etiquetas').addEventListener('change', function () {
+        if (!chart) return;
+        chart.options.plugins.datalabels.display = this.checked;
+        chart.update();
+      });
+
+      async function cargar() {
+        const imei = document.getElementById('imei').value.trim();
+        const msg = document.getElementById('mensaje');
+        msg.textContent = 'Cargando…';
+        msg.className = 'loading';
+
+        const url = '/TermoKing/historial/' + encodeURIComponent(imei) + '/';
+
+        try {
+          const res = await fetch(url);
+          const data = await res.json();
+          if (!res.ok) {
+            msg.textContent = data.error || data.message || 'Error al cargar historial';
+            msg.className = 'error';
+            return;
+          }
+          if (data.tramas && data.tramas.length) {
+            dibujarGrafica(data);
+            msg.textContent = data.descripcion || imei + ' — ' + data.total_tramas + ' tramas. ' + (data.fecha_inicio || '') + ' a ' + (data.fecha_fin || '');
+            msg.className = '';
+          } else {
+            msg.textContent = 'No hay tramas en el rango.';
+            msg.className = 'error';
+            if (chart) chart.destroy();
+            chart = null;
+          }
+        } catch (e) {
+          msg.textContent = 'Error de red: ' + e.message;
+          msg.className = 'error';
+          if (chart) chart.destroy();
+          chart = null;
+        }
+      }
+
+      function dibujarGrafica(data) {
+        const tramas = data.tramas || [];
+        const labels = tramas.map(t => t.fecha);
+        const mostrarEtiquetas = document.getElementById('mostrar-etiquetas').checked;
+
+        const seriesNumericas = [
+          'temp_supply_1', 'return_air', 'evaporation_coil', 'condensation_coil',
+          'set_point', 'power_kwh', 'co2_reading', 'o2_reading', 'cargo_1_temp', 'set_point_o2', 'set_point_co2'
+        ];
+        const datasets = [];
+        seriesNumericas.forEach((key) => {
+          const valores = tramas.map(t => {
+            const v = t[key];
+            if (v === null || v === undefined || v === '') return null;
+            const n = Number(v);
+            return isNaN(n) ? null : n;
+          });
+          if (valores.some(v => v !== null)) {
+            const color = COLORS[datasets.length % COLORS.length];
+            datasets.push({
+              key: key,
+              label: NOMBRES_ES[key] || key,
+              data: labels.map((ts, j) => ({ x: ts, y: valores[j] })),
+              borderColor: color,
+              backgroundColor: 'transparent',
+              borderWidth: 1.5,
+              pointRadius: 0,
+              pointHoverRadius: 4,
+              tension: 0.1,
+              fill: false
+            });
+          }
+        });
+
+        const ctx = document.getElementById('chart').getContext('2d');
+        if (chart) chart.destroy();
+
+        Chart.register(ChartDataLabels);
+
+        chart = new Chart(ctx, {
+          type: 'line',
+          data: { datasets },
+          plugins: [ChartDataLabels],
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+              legend: {
+                display: true,
+                position: 'top',
+                labels: { color: '#e4e6eb', boxWidth: 12 }
+              },
+              datalabels: {
+                display: mostrarEtiquetas,
+                align: 'top',
+                anchor: 'end',
+                offset: 2,
+                color: function (c) { return c.dataset.borderColor; },
+                font: { size: 11, weight: '500' },
+                formatter: function (value, ctx) {
+                  const y = (value && typeof value === 'object' && 'y' in value) ? value.y : value;
+                  if (y == null || y === '') return '';
+                  const n = Number(y);
+                  return isNaN(n) ? '' : (Math.round(n * 10) / 10).toString();
+                },
+                clamp: true
+              },
+              zoom: {
+                zoom: {
+                  wheel: { enabled: true },
+                  pinch: { enabled: true },
+                  mode: 'x'
+                },
+                pan: {
+                  enabled: true,
+                  mode: 'x'
+                },
+                limits: {
+                  x: { min: 'original', max: 'original' }
+                }
+              }
+            },
+            scales: {
+              x: {
+                type: 'time',
+                time: {
+                  unit: 'minute',
+                  displayFormats: { minute: 'HH:mm', hour: 'HH:mm', day: 'dd/MM' }
+                },
+                grid: { color: '#333' },
+                ticks: { color: '#94a3b8', maxRotation: 45 }
+              },
+              y: {
+                grid: { color: '#333' },
+                ticks: { color: '#94a3b8' }
+              }
+            }
+          }
+        });
+
+        document.getElementById('opciones-grafica').style.display = 'flex';
+        const contenedorColores = document.getElementById('colores-serie');
+        contenedorColores.innerHTML = '';
+        chart.data.datasets.forEach(function (ds, i) {
+          const div = document.createElement('div');
+          div.className = 'item-serie';
+          const input = document.createElement('input');
+          input.type = 'color';
+          input.value = ds.borderColor;
+          input.title = 'Cambiar color de ' + ds.label;
+          input.addEventListener('input', function () {
+            ds.borderColor = input.value;
+            ds.datalabels = ds.datalabels || {};
+            chart.update();
+          });
+          const lbl = document.createElement('label');
+          lbl.textContent = ds.label;
+          lbl.style.cursor = 'pointer';
+          div.appendChild(input);
+          div.appendChild(lbl);
+          contenedorColores.appendChild(div);
+        });
+      }
+    })();
+  </script>
+</body>
+</html>

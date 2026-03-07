@@ -249,6 +249,8 @@ def bd_gene(suffix: str) -> str:
 def bd_gene_mes_año(mes: str, año: str) -> str:
     return f"TK_dispositivos_{mes}_{año}"
 
+def bd_gene_mes_año_TUNEL(mes: str, año: str) -> str:
+    return f"TUNEL_dispositivos_{mes}_{año}"
 
 def bd_oficial(imei: str) -> str:
     return f"TK_{imei}_{datetime.now().year}"
@@ -264,6 +266,15 @@ def bd_gene_imei(nombre_coleccion: str, imei: str) -> str:
     sufijo  = nombre_coleccion[len(prefijo):]   # "MM_YYYY"
     return f"TK_{imei}_{sufijo}"
 
+def bd_gene_imei_TUNEL(nombre_coleccion: str, imei: str) -> str:
+    """
+    Extrae mes y año de nombre_coleccion (TUNEL_dispositivos_MM_YYYY)
+    y construye TUNEL_<imei>_MM_YYYY.
+    Más robusto que split: busca el prefijo conocido.
+    """
+    prefijo = "TUNEL_dispositivos_"
+    sufijo  = nombre_coleccion[len(prefijo):]   # "MM_YYYY"
+    return f"TUNEL_{imei}_{sufijo}"
 
 def obtener_meses_creados(db) -> List[str]:
     """
@@ -308,6 +319,20 @@ def _colecciones_recientes() -> List[str]:
             nombres.append(nombre)
     return nombres
 
+
+def _colecciones_recientes_TUNEL() -> List[str]:
+    """Mes actual + anterior si existen (para ciclo incremental)."""
+    nombres = []
+    now = datetime.now()
+    for delta in (0, 1):
+        mes  = now.month - delta
+        anio = now.year
+        if mes <= 0:
+            mes, anio = 12, anio - 1
+        nombre = bd_gene_mes_año_TUNEL(f"{mes:02d}", f"{anio:04d}")
+        if collection(nombre).find_one({}, {"_id": 1}):
+            nombres.append(nombre)
+    return nombres
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Decodificación hexadecimal — núcleo unificado
@@ -765,10 +790,10 @@ def _cursores_todos_los_imeis() -> Dict[str, Optional[datetime]]:
     """
     col = collection(COLECCION_GENERAL)
     docs = col.find(
-        {"_id": {"$in": green_box}},
+        {"_id": {"$in": green_box+PROCESADORA_PERU}},
         {"_id": 1, "ultimo_dato_recibido": 1},
     )
-    cursores: Dict[str, Optional[datetime]] = {imei: None for imei in green_box}
+    cursores: Dict[str, Optional[datetime]] = {imei: None for imei in green_box+PROCESADORA_PERU}
     for doc in docs:
         val = doc.get("ultimo_dato_recibido")
         imei = doc["_id"]
@@ -921,6 +946,135 @@ def imeis_en_colecciones(
     return resultado
 
 
+
+def reconstruccion_procesadora_peru() -> Dict[str, Any]:
+    meses = obtener_meses_creados_TUNEL(database_mongo)
+    return imeis_en_colecciones_TUNEL(meses, PROCESADORA_PERU, collection)
+
+PROCESADORA_PERU = [
+    "862643038233353",
+    "867856035103578",
+    "867858038371947","865691038275889"
+]
+
+def obtener_meses_creados_TUNEL(db) -> List[str]:
+    """
+    Lista colecciones TUNEL_dispositivos_MM_YYYY desde el mes actual hacia atrás
+    mientras existan. Una sola llamada list_collection_names().
+    """
+    todos = db.list_collection_names()
+    prefijo = "TUNEL_dispositivos_"
+    existentes: set = set()
+    for nombre in todos:
+        if not nombre.startswith(prefijo):
+            continue
+        partes = nombre.split("_")
+        if len(partes) >= 4:
+            try:
+                existentes.add((int(partes[-1]), int(partes[-2])))  # (año, mes)
+            except ValueError:
+                pass
+
+    now = datetime.now()
+    mes, anio = now.month, now.year
+    meses = []
+    while (anio, mes) in existentes:
+        meses.append(bd_gene_mes_año_TUNEL(f"{mes:02d}", f"{anio:04d}"))
+        mes -= 1
+        if mes == 0:
+            mes, anio = 12, anio - 1
+    return meses
+
+
+
+def imeis_en_colecciones_TUNEL(
+    meses_creados: List[str],
+    green_box_list: List[str],
+    col_func,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Procesa el histórico completo de IMEIs en green_box_list.
+
+    Optimizaciones:
+      · _precalcular_mapa_meses() → determina qué IMEI tiene datos en qué mes
+        antes del loop principal; meses sin datos se saltan por completo.
+      · insert_many por batch en TRATADO (un solo round-trip por bloque).
+      · _upsert_general_batch → un solo update_one por bloque en General.
+    """
+    tiempo_inicio = time.time()
+    resultado: Dict[str, List] = {imei: [] for imei in green_box_list}
+
+    # Resetear estado
+    col_general = collection(COLECCION_GENERAL)
+    for imei in green_box_list:
+        col_func(f"TRATADO_{imei}").delete_many({})
+        col_general.delete_one({"_id": imei})
+        col_general.insert_one(_doc_inicial_general(imei))
+
+    # Precalcular qué IMEIs tienen datos en cada mes — evita entrar al loop
+    # de colecciones TK_<imei>_MM_YYYY cuando no hay nada que procesar
+    mapa_meses = _precalcular_mapa_meses(meses_creados, green_box_list, col_func)
+
+    for nombre_coleccion, imeis_en_mes in mapa_meses.items():
+        # Mes sin ningún IMEI relevante → saltar completamente
+        if not imeis_en_mes:
+            for imei in green_box_list:
+                resultado[imei].append({
+                    "Coleccion":        nombre_coleccion,
+                    "cantidad":         0,
+                    "tiempo_ejecucion": round(time.time() - tiempo_inicio, 3),
+                })
+            continue
+
+        for imei in imeis_en_mes:
+            col_imei    = col_func(bd_gene_imei_TUNEL(nombre_coleccion, imei))
+            col_tratado = col_func(f"TRATADO_{imei}")
+
+            documentos_crudos = list(col_imei.find({}).sort("fecha", 1))
+            cantidad = len(documentos_crudos)
+
+            if not documentos_crudos:
+                resultado[imei].append({
+                    "Coleccion":        nombre_coleccion,
+                    "cantidad":         0,
+                    "tiempo_ejecucion": round(time.time() - tiempo_inicio, 3),
+                })
+                continue
+
+            # Procesar y acumular para insert_many
+            docs_a_insertar: List[Dict[str, Any]] = []
+            for doc_crudo in documentos_crudos:
+                r1       = procesar_documento(doc_crudo)
+                validado = estructura_termoking(r1)
+                _enriquecer_validado(validado)
+                docs_a_insertar.append(validado)
+
+            # Un solo insert_many + un solo upsert por bloque
+            if docs_a_insertar:
+                inserted = col_tratado.insert_many(docs_a_insertar)
+                _upsert_general_batch(
+                    imei,
+                    docs_a_insertar,
+                    inserted.inserted_ids,
+                )
+
+            resultado[imei].append({
+                "Coleccion":        nombre_coleccion,
+                "cantidad":         cantidad,
+                "tiempo_ejecucion": round(time.time() - tiempo_inicio, 3),
+            })
+
+    logger.info(
+        "Batch completado en %.1f s | meses=%d | IMEIs=%d",
+        time.time() - tiempo_inicio, len(meses_creados), len(green_box_list),
+    )
+    return resultado
+
+
+
+
+
+
 def reconstruccion_green_box() -> Dict[str, Any]:
     meses = obtener_meses_creados(database_mongo)
     return imeis_en_colecciones(meses, green_box, collection)
@@ -956,6 +1110,68 @@ def actualizar_incrementalmente() -> Dict[str, Any]:
                 continue
 
             col_imei = collection(bd_gene_imei(nombre_coleccion, imei))
+            filtro: Dict[str, Any] = {}
+            if ultimo_recibido is not None:
+                filtro["fecha"] = {"$gt": ultimo_recibido}
+
+            nuevos_crudos = list(col_imei.find(filtro).sort("fecha", 1))
+            if not nuevos_crudos:
+                continue
+
+            # Procesar todos → acumular
+            docs_procesados: List[Dict[str, Any]] = []
+            for doc_crudo in nuevos_crudos:
+                r1       = procesar_documento(doc_crudo)
+                validado = estructura_termoking(r1)
+                _enriquecer_validado(validado)
+                docs_procesados.append(validado)
+
+            # Un solo insert_many → un solo _upsert_general_batch
+            inserted = col_tratado.insert_many(docs_procesados)
+            _upsert_general_batch(imei, docs_procesados, inserted.inserted_ids)
+
+            nuevos_total += len(nuevos_crudos)
+
+        resumen[imei] = {
+            "nuevos_procesados":     nuevos_total,
+            "colecciones_revisadas": colecciones,
+            "cursor_anterior":       _fecha_a_iso(ultimo_recibido),
+        }
+
+    return {
+        "tiempo_ejecucion_seg": round(time.time() - tiempo_inicio, 3),
+        "resumen": resumen,
+    }
+
+
+def actualizar_incrementalmente_TUNEL() -> Dict[str, Any]:
+    """
+    Procesa solo los documentos nuevos (fecha > cursor) para cada IMEI.
+
+    Optimizaciones:
+      · _cursores_todos_los_imeis() → una sola consulta a General_dispositivos.
+      · insert_many por bloque en TRATADO en lugar de insert_one por doc.
+      · _upsert_general_batch → un solo update_one por bloque en General_dispositivos.
+    """
+    tiempo_inicio = time.time()
+    colecciones   = _colecciones_recientes_TUNEL()
+    cursores      = _cursores_todos_los_imeis()
+    resumen: Dict[str, Any] = {}
+    #incrementar los los datos del array PROCESADORA_PERU a green_box
+    #green_box = green_box + PROCESADORA_PERU
+
+    for imei in green_box+PROCESADORA_PERU:
+        _garantizar_doc_general(imei)
+        ultimo_recibido = cursores.get(imei)
+        col_tratado     = collection(f"TRATADO_{imei}")
+        nuevos_total    = 0
+
+        for nombre_coleccion in colecciones:
+            col_mes = collection(nombre_coleccion)
+            if not col_mes.find_one({"imei": imei}, {"_id": 1}):
+                continue
+
+            col_imei = collection(bd_gene_imei_TUNEL(nombre_coleccion, imei))
             filtro: Dict[str, Any] = {}
             if ultimo_recibido is not None:
                 filtro["fecha"] = {"$gt": ultimo_recibido}
@@ -1232,10 +1448,20 @@ def historial_tratado(
     · Ordenado ASC por fecha. Máximo 7 días por consulta.
     """
     if imei not in green_box:
-        return {
-            "error": f"IMEI '{imei}' no pertenece al grupo green_box.",
-            "imeis_validos": green_box,
-        }
+        if imei not in PROCESADORA_PERU:
+            return {
+                "error": f"IMEI '{imei}' no pertenece al grupo green_box o procesadora_peru.",
+                "imeis_validos": green_box + PROCESADORA_PERU,
+            }
+        #else:
+        #    return {
+        #        "error": f"IMEI '{imei}' no pertenece al grupo procesadora_peru.",
+        #        "imeis_validos": PROCESADORA_PERU,
+        #    }
+        #return {
+            #"error": f"IMEI '{imei}' no pertenece al grupo green_box.",
+            #"imeis_validos": green_box,
+        #}
 
     ahora = _ahora_gmt5()
 
@@ -1278,3 +1504,141 @@ def historial_tratado(
         "total_tramas": len(tramas),
         "tramas":       tramas,
     }
+
+#PROCESADORA_PERU = ["862643038233353","867856035103578","867858038371947"]
+
+def procesar_trama_tk():
+    #buscar en el grupo de PROCESADORA PERU lso meses TK_imei_mes_año , teniendo en cuenta 12_2025, 01_2026, 02_2026, 03_2026 , imei elemento de PROCESADORA_PERU
+    
+    for imei in PROCESADORA_PERU:
+        for mes in ["12_2025", "01_2026", "02_2026", "03_2026"]:
+            col = collection(f"TK_{imei}_{mes}")
+            docs = col.find({},{"_id": 0, "lecturas_erradas": 0}).sort("fecha", 1).limit(10)
+            for doc in docs:
+                trama = str(doc['c'])
+                if trama:
+                    objetoV = trasformador_device(trama,doc['imei'],doc['fecha'])
+                    #pasar objetoV a la coleccion TK_imei_mes_año
+                    data_ok = estructura_termoking(objetoV)
+                    col_2 = collection(f"Test_1_{imei}")
+                    col_2.insert_one(data_ok)
+                    print(objetoV)
+    return None
+    
+
+def pasar_temp(numero):
+    if -40 <= numero <= 130:
+        return numero
+    else:
+        return None
+
+def convertir_a_float(dato):
+    if isinstance(dato, float):
+        return dato
+    try:
+        float_value = float(dato)
+        return round(float_value,1)
+    except ValueError:
+        return None
+
+def con_h(x,y):
+   y = float(y)
+   if 0 < y < 100:
+      x=1
+   return x   
+
+# funcion para acoplar historicos diferenciados 
+#"c": "LOSU1770860,18.00,18.00,401.00,19.90,16.50,40.20,65.90,400.00,23.80,401.00,401.00,401.00,401.00,87,401,401.00,401.00,454,60,10.80,10.70,10.80,401.00,401.00,30,71,625.00,614.40,401.00,401.00,18.00,19.90,401.00,0.00,6.78,7.09,0,53,1,0,1,90,0,401,401.00,401.00,401.00,18.00,6,0,0,255,255,255,255,0.40,0,0,0,0,0,0,0.00,0,0,0",
+
+def trasformador_device(val:str,imei:str,fecha):
+
+    objetoV = {}
+    transformado = val.split(',')
+
+    if len(transformado) > 65:
+
+        vali =transformado
+
+        comparador1 = vali[65] if len(transformado)>65 else 0
+        comparador2 = vali[66] if len(transformado)>66 else 0
+
+        objetoV = {
+            "set_point": pasar_temp(convertir_a_float(vali[1])), 
+            "temp_supply_1": pasar_temp(convertir_a_float(vali[2])),
+            "cargo_1_temp": pasar_temp(convertir_a_float(vali[10])), 
+            "cargo_2_temp": pasar_temp(convertir_a_float(vali[11])), 
+            "cargo_3_temp": pasar_temp(convertir_a_float(vali[12])), 
+            "cargo_4_temp": pasar_temp(convertir_a_float(vali[13])), 
+            "relative_humidity": convertir_a_float(vali[14]), 
+            "avl": convertir_a_float(vali[15]), 
+            "suction_pressure": convertir_a_float(vali[16]), 
+            "discharge_pressure": convertir_a_float(vali[17]), 
+            "line_voltage": convertir_a_float(vali[18]), 
+            "line_frequency": convertir_a_float(vali[19]), 
+            "consumption_ph_1": convertir_a_float(vali[20]), 
+            "consumption_ph_2": convertir_a_float(vali[21]), 
+            "consumption_ph_3": convertir_a_float(vali[22]), 
+            "co2_reading": convertir_a_float(vali[23]), 
+            "o2_reading": convertir_a_float(vali[24]), 
+            "evaporator_speed": convertir_a_float(vali[25]), 
+            "condenser_speed": convertir_a_float(vali[26]),
+            "power_kwh": convertir_a_float(vali[27]),
+            "power_trip_reading": convertir_a_float(vali[28]),
+            "suction_temp": convertir_a_float(vali[29]),
+            "discharge_temp": convertir_a_float(vali[30]),
+            "supply_air_temp": convertir_a_float(vali[31]),
+            "return_air_temp": convertir_a_float(vali[32]),
+            "dl_battery_temp": convertir_a_float(vali[33]),
+            "dl_battery_charge": convertir_a_float(vali[34]),
+            "power_consumption": convertir_a_float(vali[35]),
+            "power_consumption_avg": convertir_a_float(vali[36]),
+            "alarm_present": convertir_a_float(vali[37]),
+            "capacity_load": convertir_a_float(vali[38]),
+            "power_state":convertir_a_float(con_h( vali[39],vali[14])), 
+            "controlling_mode": vali[40],
+            "humidity_control": convertir_a_float(vali[41]),
+            "humidity_set_point": convertir_a_float(vali[42]),
+            "fresh_air_ex_mode": convertir_a_float(vali[43]),
+            "fresh_air_ex_rate": convertir_a_float(vali[44]),
+            "fresh_air_ex_delay": convertir_a_float(vali[45]),
+            "set_point_o2": convertir_a_float(vali[46]),
+            "set_point_co2": convertir_a_float(vali[47]),
+            "defrost_term_temp": convertir_a_float(vali[48]),
+            "defrost_interval": convertir_a_float(vali[49]),
+            "water_cooled_conde": convertir_a_float(vali[50]),
+            "usda_trip": convertir_a_float(vali[51]),
+            "evaporator_exp_valve": convertir_a_float(vali[52]),
+            "suction_mod_valve": convertir_a_float(vali[53]),
+            "hot_gas_valve": convertir_a_float(vali[54]),
+            "economizer_valve": convertir_a_float(vali[55]),
+            "ethylene": convertir_a_float(vali[56]),
+            "stateProcess": 0 ,
+            "stateInyection": vali[64],
+            #$document['stateProcess']==5.00 vali[57]
+            "timerOfProcess": convertir_a_float(0),
+            "battery_voltage": convertir_a_float(0),
+            "power_trip_duration":convertir_a_float(0),
+            "modelo": "THERMOKING",
+            "latitud": 0,
+            "longitud":  0,
+            "created_at": fecha,
+            #"telemetria_id": tele_dispositivo,
+            "inyeccion_etileno": 0,
+            "defrost_prueba": 0,
+            "ripener_prueba": 0,
+            "sp_ethyleno": convertir_a_float(vali[61]),
+            "inyeccion_hora": convertir_a_float(vali[58]),
+            "inyeccion_pwm": convertir_a_float(vali[63]),
+            "extra_1": 0,
+            "extra_2": 0,
+            "extra_3": 0,
+            "extra_4": 0,
+            "extra_5": 0,
+            "imei":imei,
+            "fecha":fecha,
+            "i":imei,
+            "tiempo_paso":comparador2,
+            "device":vali[0]
+
+            }
+    return objetoV

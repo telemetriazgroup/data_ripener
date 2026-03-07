@@ -14,6 +14,9 @@ from server.functions.termoking import (
     estado_general_dispositivos,
     historial_tratado,
     actualizar_incrementalmente,
+    reconstruccion_procesadora_peru,
+    actualizar_incrementalmente_TUNEL,
+    procesar_trama_tk
 )
 #Aqui importamos el modelo necesario para la clase 
 from server.models.termoking import (
@@ -27,6 +30,30 @@ from server.models.termoking import (
 
 )
 router = APIRouter()
+
+@router.get("/procesar_trama_tk/", response_description="Procesar trama TK.")
+def procesar_trama_tk_ok():
+    """
+    Procesar trama TK.
+    """
+    data = procesar_trama_tk()
+    return ResponseModel(data, "Procesar trama TK realizada correctamente.")
+
+@router.get("/actualizar_incrementalmente_TUNEL/", response_description="Actualizacion incremental de los datos.")
+def actualizar_incrementalmente_TUNEL_ok():
+    """
+    Actualizacion incremental de los datos.
+    """
+    data = actualizar_incrementalmente_TUNEL()
+    return ResponseModel(data, "Actualizacion incremental de los datos realizada correctamente.")
+
+@router.get("/reconstruccion_procesadora_peru/", response_description="Reconstruccion de la coleccion de los dispositivos.")
+def reconstruccion_procesadora_peru_ok():
+    """
+    Reconstruccion de la coleccion de los dispositivos.
+    """
+    data = reconstruccion_procesadora_peru()
+    return ResponseModel(data, "Reconstruccion de la coleccion de los dispositivos realizada correctamente.")
 
 #ruta para actualizar incrementalmente
 @router.get("/actualizar_incrementalmente/", response_description="Actualizacion incremental de los datos.")
